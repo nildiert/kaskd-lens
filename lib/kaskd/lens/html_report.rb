@@ -120,12 +120,14 @@ module Kaskd
                 <div class="tab" data-tab="info">
                   &#8505; Info
                 </div>
-                #{@focused ? '<div class="tab tab-tests" data-tab="tests">&#128221; Tests <span class="tab-count" id="tc-tests">0</span></div>' : ""}
+                #{@focused ? '<div class="tab tab-tests" data-tab="tests-graph">&#9654; Tests Graph <span class="tab-count" id="tc-tests">0</span></div>' : ""}
+                #{@focused ? '<div class="tab tab-tests" data-tab="tests-list">&#128221; Tests List</div>' : ""}
               </div>
               <div class="tab-body active" id="tb-affected"></div>
               <div class="tab-body" id="tb-deps"></div>
               <div class="tab-body" id="tb-info"></div>
-              #{@focused ? '<div class="tab-body" id="tb-tests"></div>' : ""}
+              #{@focused ? '<div class="tab-body tab-body-graph" id="tb-tests-graph"></div>' : ""}
+              #{@focused ? '<div class="tab-body" id="tb-tests-list"></div>' : ""}
             </div>
             <button id="btn-toggle-detail" title="Toggle detail panel"><span class="arrow">&#9654;</span></button>
 
@@ -845,6 +847,19 @@ module Kaskd
             border-color: #2da44e;
             color: #1a7f37;
           }
+          .tab-body-graph {
+            padding: 0 !important;
+            overflow: hidden !important;
+            display: none;
+            flex-direction: column;
+          }
+          .tab-body-graph.active {
+            display: flex !important;
+          }
+          #vis-tests-graph {
+            flex: 1;
+            min-height: 0;
+          }
           .test-pack-group { margin-bottom: 14px; }
           .test-pack-label {
             font-size: 10px;
@@ -999,6 +1014,8 @@ module Kaskd
               if (FOCUSED) {
                 var testsEl = document.getElementById('badge-tests');
                 if (testsEl) testsEl.textContent = FOCUSED.tests.length + ' tests';
+                var tcEl = document.getElementById('tc-tests');
+                if (tcEl) tcEl.textContent = FOCUSED.tests.length;
                 selectService(FOCUSED.class_name);
               }
               hideOverlay();
@@ -1077,7 +1094,8 @@ module Kaskd
               renderDepsTab(depsDist, depsPrev, name);
               renderInfoTab(svc);
               if (FOCUSED && name === FOCUSED.class_name) {
-                renderTestsTab(FOCUSED.tests);
+                renderTestsGraphTab(FOCUSED);
+                renderTestsListTab(FOCUSED.tests);
               }
               showDetailOverlay(svc.class_name);
             }
@@ -1307,11 +1325,9 @@ module Kaskd
                 </div>`;
             }
 
-            function renderTestsTab(tests) {
-              var el = document.getElementById('tb-tests');
+            function renderTestsListTab(tests) {
+              var el = document.getElementById('tb-tests-list');
               if (!el) return;
-              var countEl = document.getElementById('tc-tests');
-              if (countEl) countEl.textContent = tests.length;
               if (!tests.length) {
                 el.innerHTML = '<div class="desc-info">No test files found.</div>';
                 return;
@@ -1336,10 +1352,126 @@ module Kaskd
                         '<div class="test-path">' + esc(t.path) + '</div>' +
                         (t.class_name ? '<div class="test-class">' + esc(t.class_name) + '</div>' : '') +
                       '</div>' +
-                      '</div>';
+                    '</div>';
                   }).join('') +
-                  '</div>';
+                '</div>';
               }).join('');
+            }
+
+            // ── Pack color palette for test graph nodes ─────────────────────────────────
+            var PACK_COLORS = [
+              '#1f6feb','#2ea043','#a371f7','#f0883e','#58a6ff',
+              '#3fb950','#d2a8ff','#ffa657','#79c0ff','#56d364',
+            ];
+            var packColorMap = {};
+            var packColorIdx = 0;
+            function packColor(pack) {
+              if (!packColorMap[pack]) {
+                packColorMap[pack] = PACK_COLORS[packColorIdx % PACK_COLORS.length];
+                packColorIdx++;
+              }
+              return packColorMap[pack];
+            }
+
+            var testsNetwork = null;
+
+            function renderTestsGraphTab(focused) {
+              var el = document.getElementById('tb-tests-graph');
+              if (!el) return;
+
+              var tests = focused.tests;
+              if (!tests.length) {
+                el.innerHTML = '<div class="desc-info">No test files found.</div>';
+                return;
+              }
+
+              // Ensure container div exists
+              el.innerHTML = '<div id="vis-tests-graph" style="width:100%;height:100%;min-height:360px;"></div>';
+
+              var nodes = new vis.DataSet();
+              var edges = new vis.DataSet();
+
+              // Central service node
+              var svcId = focused.class_name;
+              nodes.add({
+                id: svcId,
+                label: nodeLabel(svcId),
+                title: svcId,
+                shape: 'ellipse',
+                size: 28,
+                color: { background: '#f0f6fc', border: '#cdd9e5',
+                         highlight: { background: '#ffffff', border: '#e6edf3' } },
+                font: { color: '#0d1117', size: 12, bold: true,
+                        face: 'SF Mono, Fira Code, monospace' },
+                borderWidth: 2,
+              });
+
+              // Test nodes
+              tests.forEach(function(t, i) {
+                var m = t.path.match(/^packs\/([^\/]+)\//);
+                var pack = m ? m[1] : 'app';
+                var color = packColor(pack);
+                var shortPath = t.path.replace(/^.*\/test\//, 'test/').replace(/^.*\/spec\//, 'spec/');
+                var parts = shortPath.split('/');
+                var fileName = parts[parts.length - 1];
+                var label = fileName + (t.class_name ? '\n' + t.class_name.split('::').pop() : '');
+
+                nodes.add({
+                  id: 'test_' + i,
+                  label: label,
+                  title: t.path + (t.class_name ? '\n' + t.class_name : ''),
+                  shape: 'box',
+                  color: {
+                    background: color + '22',
+                    border: color,
+                    highlight: { background: color + '44', border: color },
+                  },
+                  font: { color: '#e6edf3', size: 10,
+                          face: 'SF Mono, Fira Code, monospace' },
+                  borderWidth: 1,
+                });
+
+                edges.add({
+                  from: svcId,
+                  to: 'test_' + i,
+                  arrows: 'to',
+                  color: { color: color, opacity: 0.6 },
+                  width: 1,
+                  dashes: false,
+                  title: t.path,
+                });
+              });
+
+              var container = document.getElementById('vis-tests-graph');
+              if (!container) return;
+              if (testsNetwork) { testsNetwork.destroy(); testsNetwork = null; }
+
+              testsNetwork = new vis.Network(container, { nodes: nodes, edges: edges }, {
+                layout: { randomSeed: 42 },
+                physics: {
+                  enabled: true,
+                  repulsion: {
+                    centralGravity: 0.3,
+                    springLength: 120,
+                    springConstant: 0.05,
+                    nodeDistance: 160,
+                    damping: 0.09,
+                  },
+                  solver: 'repulsion',
+                  stabilization: { iterations: 200, fit: true },
+                },
+                interaction: { hover: true, tooltipDelay: 150, zoomView: true },
+                edges: {
+                  smooth: { type: 'continuous', roundness: 0.3 },
+                },
+                nodes: {
+                  shadow: { enabled: true, size: 4, color: 'rgba(0,0,0,0.35)' },
+                },
+              });
+
+              testsNetwork.once('stabilizationIterationsDone', function() {
+                testsNetwork.fit({ animation: { duration: 300, easingFunction: 'easeInOutQuad' } });
+              });
             }
 
             // ── Helpers ────────────────────────────────────────────────────────────────
@@ -1598,6 +1730,13 @@ module Kaskd
                 document.querySelectorAll('.tab-body').forEach(b => b.classList.remove('active'));
                 tab.classList.add('active');
                 document.getElementById('tb-' + tab.dataset.tab).classList.add('active');
+                // Redraw tests graph when its tab becomes visible
+                if (tab.dataset.tab === 'tests-graph' && testsNetwork) {
+                  setTimeout(function() {
+                    testsNetwork.redraw();
+                    testsNetwork.fit({ animation: { duration: 200, easingFunction: 'easeInOutQuad' } });
+                  }, 30);
+                }
               });
             });
 
