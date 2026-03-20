@@ -120,14 +120,10 @@ module Kaskd
                 <div class="tab" data-tab="info">
                   &#8505; Info
                 </div>
-                #{@focused ? '<div class="tab tab-tests" data-tab="tests-graph">&#9654; Tests Graph <span class="tab-count" id="tc-tests">0</span></div>' : ""}
-                #{@focused ? '<div class="tab tab-tests" data-tab="tests-list">&#128221; Tests List</div>' : ""}
               </div>
               <div class="tab-body active" id="tb-affected"></div>
               <div class="tab-body" id="tb-deps"></div>
               <div class="tab-body" id="tb-info"></div>
-              #{@focused ? '<div class="tab-body tab-body-graph" id="tb-tests-graph"></div>' : ""}
-              #{@focused ? '<div class="tab-body" id="tb-tests-list"></div>' : ""}
             </div>
             <button id="btn-toggle-detail" title="Toggle detail panel"><span class="arrow">&#9654;</span></button>
 
@@ -155,7 +151,10 @@ module Kaskd
 
               <!-- Graph -->
               <div class="graph-area">
+                #{@focused ? '<div id="view-switch"><button class="view-btn active" id="btn-view-graph">&#9906; Dependencies</button><button class="view-btn" id="btn-view-tests">&#128203; Tests</button></div>' : ""}
+
                 <div id="vis-graph"></div>
+                <div id="vis-tests-graph" style="display:none;width:100%;height:100%;"></div>
 
                 <div id="graph-empty">
                   <svg width="60" height="60" viewBox="0 0 60 60" fill="none" stroke="#4a6080" stroke-width="1.5">
@@ -847,18 +846,34 @@ module Kaskd
             border-color: #2da44e;
             color: #1a7f37;
           }
-          .tab-body-graph {
-            padding: 0 !important;
-            overflow: hidden !important;
-            display: none;
-            flex-direction: column;
+          /* ── View switch (Graph / Tests) ─────────────────────────── */
+          #view-switch {
+            position: absolute;
+            top: 12px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            display: flex;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow: hidden;
           }
-          .tab-body-graph.active {
-            display: flex !important;
+          .view-btn {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            padding: 5px 14px;
+            font-size: 11px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background .15s, color .15s;
+            letter-spacing: .03em;
           }
-          #vis-tests-graph {
-            flex: 1;
-            min-height: 0;
+          .view-btn:hover { background: var(--bg-hover); color: var(--text-base); }
+          .view-btn.active {
+            background: var(--accent);
+            color: #ffffff;
           }
           .test-pack-group { margin-bottom: 14px; }
           .test-pack-label {
@@ -1014,8 +1029,6 @@ module Kaskd
               if (FOCUSED) {
                 var testsEl = document.getElementById('badge-tests');
                 if (testsEl) testsEl.textContent = FOCUSED.tests.length + ' tests';
-                var tcEl = document.getElementById('tc-tests');
-                if (tcEl) tcEl.textContent = FOCUSED.tests.length;
                 selectService(FOCUSED.class_name);
               }
               hideOverlay();
@@ -1093,10 +1106,6 @@ module Kaskd
               renderAffectedTab(affectedDist, affectedPrev, name);
               renderDepsTab(depsDist, depsPrev, name);
               renderInfoTab(svc);
-              if (FOCUSED && name === FOCUSED.class_name) {
-                renderTestsGraphTab(FOCUSED);
-                renderTestsListTab(FOCUSED.tests);
-              }
               showDetailOverlay(svc.class_name);
             }
 
@@ -1374,29 +1383,29 @@ module Kaskd
             }
 
             var testsNetwork = null;
+            var testsBuilt   = false;
 
-            function renderTestsGraphTab(focused) {
-              var el = document.getElementById('tb-tests-graph');
-              if (!el) return;
+            function buildTestsGraph(focused) {
+              if (testsBuilt) return;
+              testsBuilt = true;
 
               var tests = focused.tests;
+              var container = document.getElementById('vis-tests-graph');
+              if (!container) return;
+
               if (!tests.length) {
-                el.innerHTML = '<div class="desc-info">No test files found.</div>';
+                container.innerHTML = '<div class="desc-info" style="padding:24px;text-align:center;color:var(--text-dim)">No test files found.</div>';
                 return;
               }
-
-              // Ensure container div exists
-              el.innerHTML = '<div id="vis-tests-graph" style="width:100%;height:100%;min-height:360px;"></div>';
 
               var nodes = new vis.DataSet();
               var edges = new vis.DataSet();
 
               // Central service node
-              var svcId = focused.class_name;
               nodes.add({
-                id: svcId,
-                label: nodeLabel(svcId),
-                title: svcId,
+                id: '__svc__',
+                label: nodeLabel(focused.class_name),
+                title: focused.class_name,
                 shape: 'ellipse',
                 size: 28,
                 color: { background: '#f0f6fc', border: '#cdd9e5',
@@ -1406,15 +1415,14 @@ module Kaskd
                 borderWidth: 2,
               });
 
-              // Test nodes
               tests.forEach(function(t, i) {
                 var m = t.path.match(/^packs\/([^\/]+)\//);
                 var pack = m ? m[1] : 'app';
                 var color = packColor(pack);
-                var shortPath = t.path.replace(/^.*\/test\//, 'test/').replace(/^.*\/spec\//, 'spec/');
-                var parts = shortPath.split('/');
+                var parts = t.path.split('/');
                 var fileName = parts[parts.length - 1];
-                var label = fileName + (t.class_name ? '\n' + t.class_name.split('::').pop() : '');
+                var shortClass = t.class_name ? t.class_name.split('::').pop() : '';
+                var label = fileName + (shortClass ? '\n' + shortClass : '');
 
                 nodes.add({
                   id: 'test_' + i,
@@ -1424,7 +1432,7 @@ module Kaskd
                   color: {
                     background: color + '22',
                     border: color,
-                    highlight: { background: color + '44', border: color },
+                    highlight: { background: color + '55', border: color },
                   },
                   font: { color: '#e6edf3', size: 10,
                           face: 'SF Mono, Fira Code, monospace' },
@@ -1432,18 +1440,15 @@ module Kaskd
                 });
 
                 edges.add({
-                  from: svcId,
+                  from: '__svc__',
                   to: 'test_' + i,
                   arrows: 'to',
-                  color: { color: color, opacity: 0.6 },
+                  color: { color: color, opacity: 0.5 },
                   width: 1,
-                  dashes: false,
                   title: t.path,
                 });
               });
 
-              var container = document.getElementById('vis-tests-graph');
-              if (!container) return;
               if (testsNetwork) { testsNetwork.destroy(); testsNetwork = null; }
 
               testsNetwork = new vis.Network(container, { nodes: nodes, edges: edges }, {
@@ -1452,26 +1457,68 @@ module Kaskd
                   enabled: true,
                   repulsion: {
                     centralGravity: 0.3,
-                    springLength: 120,
-                    springConstant: 0.05,
-                    nodeDistance: 160,
+                    springLength: 130,
+                    springConstant: 0.04,
+                    nodeDistance: 170,
                     damping: 0.09,
                   },
                   solver: 'repulsion',
-                  stabilization: { iterations: 200, fit: true },
+                  stabilization: { iterations: 250, fit: true },
                 },
                 interaction: { hover: true, tooltipDelay: 150, zoomView: true },
-                edges: {
-                  smooth: { type: 'continuous', roundness: 0.3 },
-                },
-                nodes: {
-                  shadow: { enabled: true, size: 4, color: 'rgba(0,0,0,0.35)' },
-                },
+                edges: { smooth: { type: 'continuous', roundness: 0.3 } },
+                nodes: { shadow: { enabled: true, size: 4, color: 'rgba(0,0,0,0.35)' } },
               });
 
               testsNetwork.once('stabilizationIterationsDone', function() {
                 testsNetwork.fit({ animation: { duration: 300, easingFunction: 'easeInOutQuad' } });
               });
+            }
+
+            // ── View switch (Dependencies <-> Tests) ───────────────────────────────────
+            var currentView = 'graph'; // 'graph' | 'tests'
+
+            function switchView(view) {
+              if (view === currentView) return;
+              currentView = view;
+
+              var visGraph   = document.getElementById('vis-graph');
+              var visTests   = document.getElementById('vis-tests-graph');
+              var btnGraph   = document.getElementById('btn-view-graph');
+              var btnTests   = document.getElementById('btn-view-tests');
+              var depthCtrl  = document.getElementById('depth-ctrl');
+              var copyBtn    = document.getElementById('btn-copy-diagram');
+              var legendEl   = document.getElementById('legend');
+
+              if (view === 'tests') {
+                if (visGraph)  visGraph.style.display  = 'none';
+                if (visTests)  visTests.style.display  = 'block';
+                if (depthCtrl) depthCtrl.classList.remove('visible');
+                if (copyBtn)   copyBtn.classList.remove('visible');
+                if (legendEl)  legendEl.classList.remove('visible');
+                if (btnGraph)  btnGraph.classList.remove('active');
+                if (btnTests)  btnTests.classList.add('active');
+                if (FOCUSED) {
+                  buildTestsGraph(FOCUSED);
+                  setTimeout(function() {
+                    if (testsNetwork) {
+                      testsNetwork.redraw();
+                      testsNetwork.fit({ animation: { duration: 200, easingFunction: 'easeInOutQuad' } });
+                    }
+                  }, 30);
+                }
+              } else {
+                if (visGraph)  visGraph.style.display  = 'block';
+                if (visTests)  visTests.style.display  = 'none';
+                if (btnGraph)  btnGraph.classList.add('active');
+                if (btnTests)  btnTests.classList.remove('active');
+                // Restore depth/copy/legend visibility if a service is selected
+                if (selected) {
+                  if (depthCtrl) depthCtrl.classList.add('visible');
+                  if (copyBtn)   copyBtn.classList.add('visible');
+                  if (legendEl)  legendEl.classList.add('visible');
+                }
+              }
             }
 
             // ── Helpers ────────────────────────────────────────────────────────────────
@@ -1730,13 +1777,6 @@ module Kaskd
                 document.querySelectorAll('.tab-body').forEach(b => b.classList.remove('active'));
                 tab.classList.add('active');
                 document.getElementById('tb-' + tab.dataset.tab).classList.add('active');
-                // Redraw tests graph when its tab becomes visible
-                if (tab.dataset.tab === 'tests-graph' && testsNetwork) {
-                  setTimeout(function() {
-                    testsNetwork.redraw();
-                    testsNetwork.fit({ animation: { duration: 200, easingFunction: 'easeInOutQuad' } });
-                  }, 30);
-                }
               });
             });
 
@@ -1762,6 +1802,12 @@ module Kaskd
 
             // Export
             document.getElementById('btn-export').addEventListener('click', exportJSON);
+
+            // View switch
+            var btnViewGraph = document.getElementById('btn-view-graph');
+            var btnViewTests = document.getElementById('btn-view-tests');
+            if (btnViewGraph) btnViewGraph.addEventListener('click', function() { switchView('graph'); });
+            if (btnViewTests) btnViewTests.addEventListener('click', function() { switchView('tests'); });
 
             // ── Init ───────────────────────────────────────────────────────────────────
             loadData();
