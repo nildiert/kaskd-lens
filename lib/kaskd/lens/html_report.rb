@@ -12,19 +12,26 @@ module Kaskd
     # - Full interactive UI: search, pack filter, blast radius, depth slider,
     #   detail overlay with tabs, path tracing, dark/light themes, copy diagram,
     #   export JSON, navigation history
+    #
+    # When `focused:` is provided, the report opens pre-selected on a specific
+    # service and adds a "Tests" tab listing all affected test files.
     class HtmlReport
-      # @param result [Hash] output from Kaskd.analyze
+      # @param result  [Hash]      output from Kaskd.analyze
       #   { services: Hash, generated_at: String, total: Integer }
-      def initialize(result)
-        @result = result
+      # @param focused [Hash, nil] optional focus context
+      #   { class_name: String, blast_radius: Hash, tests: Array<{path:, class_name:}> }
+      def initialize(result, focused: nil)
+        @result  = result
+        @focused = focused
       end
 
       # @return [String] the complete HTML document
       def render
-        vis_js = load_vis_network_js
+        vis_js    = load_vis_network_js
         data_json = JSON.generate(@result)
+        focused_json = @focused ? JSON.generate(focused_payload) : "null"
 
-        build_html(vis_js, data_json)
+        build_html(vis_js, data_json, focused_json)
       end
 
       private
@@ -34,14 +41,28 @@ module Kaskd
         File.read(path)
       end
 
-      def build_html(vis_js, data_json)
+      # Serialize focused data in a JS-friendly format:
+      # { class_name, affected_count, tests: [ { path, class_name, pack } ] }
+      def focused_payload
+        blast  = @focused[:blast_radius]
+        tests  = @focused[:tests] || []
+
+        {
+          class_name:      @focused[:class_name],
+          affected_count:  blast[:affected]&.length || 0,
+          max_depth:       blast[:max_depth],
+          tests:           tests.map { |t| { path: t[:path], class_name: t[:class_name] } },
+        }
+      end
+
+      def build_html(vis_js, data_json, focused_json)
         <<~HTML
           <!DOCTYPE html>
           <html lang="en">
           <head>
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Service Graph — Kaskd Lens</title>
+            <title>#{@focused ? "#{@focused[:class_name]} — Kaskd Lens" : "Service Graph — Kaskd Lens"}</title>
             <script>#{vis_js}</script>
             <style>#{css}</style>
           </head>
@@ -53,9 +74,10 @@ module Kaskd
           </div>
 
           <header>
-            <h1>&#11041; Service Graph</h1>
+            <h1>&#11041; #{@focused ? "Focus: <span class=\"header-focus\">#{@focused[:class_name]}</span>" : "Service Graph"}</h1>
             <span class="badge" id="badge-total">—</span>
             <span class="badge" id="badge-cache">—</span>
+            #{@focused ? "<span class=\"badge badge-tests\" id=\"badge-tests\">—</span>" : ""}
             <span class="spacer"></span>
             <div class="theme-toggle" id="theme-toggle" title="Toggle light/dark theme">
               <span class="icon" id="icon-moon">&#9790;</span>
@@ -98,10 +120,12 @@ module Kaskd
                 <div class="tab" data-tab="info">
                   &#8505; Info
                 </div>
+                #{@focused ? '<div class="tab tab-tests" data-tab="tests">&#128221; Tests <span class="tab-count" id="tc-tests">0</span></div>' : ""}
               </div>
               <div class="tab-body active" id="tb-affected"></div>
               <div class="tab-body" id="tb-deps"></div>
               <div class="tab-body" id="tb-info"></div>
+              #{@focused ? '<div class="tab-body" id="tb-tests"></div>' : ""}
             </div>
             <button id="btn-toggle-detail" title="Toggle detail panel"><span class="arrow">&#9654;</span></button>
 
@@ -166,7 +190,8 @@ module Kaskd
           <div class="toast" id="toast"></div>
 
           <script>
-          window.__KASKD_DATA__ = #{data_json};
+          window.__KASKD_DATA__    = #{data_json};
+          window.__KASKD_FOCUSED__ = #{focused_json};
           #{javascript}
           </script>
           </body>
@@ -803,6 +828,53 @@ module Kaskd
           }
           @keyframes spin { to { transform: rotate(360deg); } }
           #overlay p { color: var(--text-muted); font-size: 12px; }
+
+          /* ── Focused mode ────────────────────────────────────────── */
+          .header-focus {
+            color: var(--accent-hi);
+            font-family: "SF Mono", "Fira Code", monospace;
+            font-size: 13px;
+          }
+          .badge-tests {
+            background: #1a3a2a;
+            border-color: #2ea043;
+            color: #3fb950;
+          }
+          [data-theme="light"] .badge-tests {
+            background: #dafbe1;
+            border-color: #2da44e;
+            color: #1a7f37;
+          }
+          .test-pack-group { margin-bottom: 14px; }
+          .test-pack-label {
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: .07em;
+            color: var(--text-dim);
+            padding: 3px 0 5px;
+            border-bottom: 1px solid var(--border);
+            margin-bottom: 6px;
+          }
+          .test-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 6px;
+            padding: 3px 4px;
+            border-radius: 4px;
+          }
+          .test-path {
+            font-family: "SF Mono", "Fira Code", monospace;
+            font-size: 10px;
+            color: var(--text-muted);
+            line-height: 1.5;
+            word-break: break-all;
+          }
+          .test-class {
+            font-size: 10px;
+            color: var(--text-dim);
+            margin-top: 1px;
+          }
         CSS
       end
       # rubocop:enable Metrics/MethodLength
@@ -814,7 +886,8 @@ module Kaskd
             'use strict';
 
             // ── Load data from embedded JSON ──────────────────────────────────────────
-            var DATA = window.__KASKD_DATA__;
+            var DATA    = window.__KASKD_DATA__;
+            var FOCUSED = window.__KASKD_FOCUSED__;
 
             // ── State ──────────────────────────────────────────────────────────────────
             let services  = {};
@@ -923,6 +996,11 @@ module Kaskd
               populatePacks();
               updateBadges(DATA);
               renderList('');
+              if (FOCUSED) {
+                var testsEl = document.getElementById('badge-tests');
+                if (testsEl) testsEl.textContent = FOCUSED.tests.length + ' tests';
+                selectService(FOCUSED.class_name);
+              }
               hideOverlay();
             }
 
@@ -998,6 +1076,9 @@ module Kaskd
               renderAffectedTab(affectedDist, affectedPrev, name);
               renderDepsTab(depsDist, depsPrev, name);
               renderInfoTab(svc);
+              if (FOCUSED && name === FOCUSED.class_name) {
+                renderTestsTab(FOCUSED.tests);
+              }
               showDetailOverlay(svc.class_name);
             }
 
@@ -1224,6 +1305,41 @@ module Kaskd
                   ${desc ? esc(desc) : '<span style="color:var(--text-dim)">No description documented.</span>'}
                   ${svc.parent ? `<br><br><span style="color:var(--text-muted)">Inherits from: <code style="color:#93c5fd">${esc(svc.parent)}</code></span>` : ''}
                 </div>`;
+            }
+
+            function renderTestsTab(tests) {
+              var el = document.getElementById('tb-tests');
+              if (!el) return;
+              var countEl = document.getElementById('tc-tests');
+              if (countEl) countEl.textContent = tests.length;
+              if (!tests.length) {
+                el.innerHTML = '<div class="desc-info">No test files found.</div>';
+                return;
+              }
+              var groups = {};
+              tests.forEach(function(t) {
+                var m = t.path.match(/^packs\/([^\/]+)\//);
+                var pack = m ? m[1] : 'app';
+                if (!groups[pack]) groups[pack] = [];
+                groups[pack].push(t);
+              });
+              el.innerHTML = Object.entries(groups).sort(function(a, b) {
+                return a[0].localeCompare(b[0]);
+              }).map(function(entry) {
+                var pack = entry[0];
+                var items = entry[1];
+                return '<div class="test-pack-group">' +
+                  '<div class="test-pack-label">&#128230; ' + esc(pack) + ' (' + items.length + ')</div>' +
+                  items.map(function(t) {
+                    return '<div class="test-item">' +
+                      '<div>' +
+                        '<div class="test-path">' + esc(t.path) + '</div>' +
+                        (t.class_name ? '<div class="test-class">' + esc(t.class_name) + '</div>' : '') +
+                      '</div>' +
+                      '</div>';
+                  }).join('') +
+                  '</div>';
+              }).join('');
             }
 
             // ── Helpers ────────────────────────────────────────────────────────────────

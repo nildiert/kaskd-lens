@@ -33,6 +33,51 @@ module Kaskd
         path
       end
 
+      # Generate a focused HTML report for a specific service.
+      # The report opens with the service pre-selected, shows its blast radius
+      # tree, and includes a dedicated "Tests" tab listing all affected test files.
+      #
+      # @param class_name [String]      fully-qualified service class name
+      # @param root       [String, nil] project root (defaults to Dir.pwd)
+      # @param output     [String, nil] output file path
+      # @param max_depth  [Integer]     BFS depth for blast radius (default: 6)
+      # @return [String] the path to the generated HTML file
+      def focus(class_name:, root: nil, output: nil, max_depth: 6)
+        root   ||= Dir.pwd
+        safe   = class_name.gsub("::", "-").gsub(/[^A-Za-z0-9\-_]/, "").downcase
+        output ||= File.join(root, "kaskd-focus-#{safe}.html")
+
+        result        = Kaskd.analyze(root: root)
+        blast         = Kaskd::BlastRadius.new(result[:services]).compute(class_name, max_depth: max_depth)
+        related_tests = Kaskd::TestFinder.new(root: root).find_for(
+          blast[:affected].map { |a| a[:class_name] } + [class_name],
+          result[:services]
+        )
+
+        focused = {
+          class_name: class_name,
+          blast_radius: blast,
+          tests: related_tests[:test_files],
+        }
+
+        html = HtmlReport.new(result, focused: focused).render
+        File.write(output, html)
+        output
+      end
+
+      # Generate a focused report and immediately open it in the browser.
+      #
+      # @param class_name [String]      fully-qualified service class name
+      # @param root       [String, nil] project root
+      # @param output     [String, nil] output file path
+      # @param max_depth  [Integer]     BFS depth (default: 6)
+      # @return [String] the path to the generated HTML file
+      def open_focus(class_name:, root: nil, output: nil, max_depth: 6)
+        path = focus(class_name: class_name, root: root, output: output, max_depth: max_depth)
+        open_in_browser("file://#{File.expand_path(path)}")
+        path
+      end
+
       # Start a lightweight HTTP server and open the report in the browser.
       #
       # @param root [String, nil] project root
